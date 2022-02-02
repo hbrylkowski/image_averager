@@ -75,11 +75,9 @@ func main() {
 	filesChannel := make(chan string, INGEST_IMAGE_BUFFER)
 	ingestChannel := make(chan image.Image, INGEST_BUFFER)
 	outputChannel := make(chan averageImage, workers)
-	var processWg sync.WaitGroup
-	processWg.Add(workers)
 
 	for i := 0; i < workers; i++ {
-		go processImages(ingestChannel, outputChannel, width, height, &processWg)
+		go processImages(ingestChannel, outputChannel, width, height)
 	}
 
 	var loaderWg sync.WaitGroup
@@ -98,7 +96,6 @@ func main() {
 	close(filesChannel)
 	loaderWg.Wait()
 	close(ingestChannel)
-	processWg.Wait()
 
 	finalImg := newAveragedImage(width, height)
 	for _workers := 0; _workers < workers; _workers++ {
@@ -148,7 +145,7 @@ func getImageDimensions(path string) (width int, height int, err error) {
 	return
 }
 
-func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width int, height int, s *sync.WaitGroup) {
+func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width int, height int) {
 	averaged := newAveragedImage(width, height)
 	for img := range imgs {
 		for w := 0; w < width; w++ {
@@ -163,7 +160,6 @@ func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width i
 		averaged.imagesSummed++
 	}
 	outputs <- averaged
-	s.Done()
 }
 
 func getImageFromFilePath(filePath string) (image.Image, error) {
