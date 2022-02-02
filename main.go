@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
+	"github.com/schollz/progressbar/v3"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -11,10 +13,12 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 )
 
 const INGEST_BUFFER = 256
-const SUM_WORKERS = 2
+const INGEST_IMAGE_BUFFER = 256
 
 type averageImage struct {
 	pixels       [][][]uint32
@@ -55,30 +59,49 @@ func newAveragedImage(width int, height int) averageImage {
 }
 
 func main() {
-	root := "/Users/hubert_b/GolandProjects/image_averager/hscf"
+	rootPtr := flag.String("images-source", "", "directory from which to average images")
+	targetPtr := flag.String("target-image", "", "where to save averaged images")
+	flag.Parse()
+	root := *rootPtr
+
+	workers := runtime.NumCPU()
+
 	files, err := ioutil.ReadDir(root)
 	if err != nil {
 		panic(err)
 	}
 	width, height, err := getImageDimensions(filepath.Join(root, files[0].Name()))
 
+	filesChannel := make(chan string, INGEST_IMAGE_BUFFER)
 	ingestChannel := make(chan image.Image, INGEST_BUFFER)
-	outputChannel := make(chan averageImage)
-	for i := 0; i < SUM_WORKERS; i++ {
-		go processImages(ingestChannel, outputChannel, width, height)
+	outputChannel := make(chan averageImage, workers)
+	var processWg sync.WaitGroup
+	processWg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go processImages(ingestChannel, outputChannel, width, height, &processWg)
 	}
+
+	var loaderWg sync.WaitGroup
+	loaderWg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go loadImages(filesChannel, ingestChannel, &loaderWg)
+	}
+
+	bar := progressbar.Default(int64(len(files)))
 
 	for _, file := range files {
-		img, err := getImageFromFilePath(filepath.Join(root, file.Name()))
-		if err != nil {
-			fmt.Println(err)
-		}
-		ingestChannel <- img
+		bar.Add(1)
+		filesChannel <- filepath.Join(root, file.Name())
 	}
+	close(filesChannel)
+	loaderWg.Wait()
 	close(ingestChannel)
+	processWg.Wait()
 
 	finalImg := newAveragedImage(width, height)
-	for workers := 0; workers < SUM_WORKERS; workers++ {
+	for _workers := 0; _workers < workers; _workers++ {
 		img := <-outputChannel
 		for c := 0; c < 3; c++ {
 			for w := 0; w < width; w++ {
@@ -90,7 +113,7 @@ func main() {
 		finalImg.imagesSummed += img.imagesSummed
 	}
 	img := finalImg.toImage()
-	f, err := os.Create("/Users/hubert_b/GolandProjects/image_averager/avg.jpg")
+	f, err := os.Create(*targetPtr)
 	if err != nil {
 		panic(err)
 	}
@@ -100,6 +123,17 @@ func main() {
 		panic(err)
 	}
 
+}
+
+func loadImages(files <-chan string, images chan<- image.Image, wg *sync.WaitGroup) {
+	for file := range files {
+		img, err := getImageFromFilePath(file)
+		if err != nil {
+			fmt.Println(err)
+		}
+		images <- img
+	}
+	wg.Done()
 }
 
 func getImageDimensions(path string) (width int, height int, err error) {
@@ -114,7 +148,7 @@ func getImageDimensions(path string) (width int, height int, err error) {
 	return
 }
 
-func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width int, height int) {
+func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width int, height int, s *sync.WaitGroup) {
 	averaged := newAveragedImage(width, height)
 	for img := range imgs {
 		for w := 0; w < width; w++ {
@@ -129,6 +163,7 @@ func processImages(imgs <-chan image.Image, outputs chan<- averageImage, width i
 		averaged.imagesSummed++
 	}
 	outputs <- averaged
+	s.Done()
 }
 
 func getImageFromFilePath(filePath string) (image.Image, error) {
